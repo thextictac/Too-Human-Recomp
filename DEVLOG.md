@@ -385,6 +385,47 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      may show the trigger (e.g., a specific `Vd*` call or MMIO write) our
      port never performs.
 
+- **Session-10 — registration-vs-invocation verified; kernel surface
+  exonerated; E10 refocused as prime suspect**:
+  1. **Registration scan** (guest-memory scan for both function pointers):
+     - `sub_8263B260`: static image sites at `0x821F2478` and `0x822BA678`.
+     - `sub_82606D90`: one heap hit at `0x401BFD00` — determined **volatile**
+       (gdb watchpoint shows the slot being rewritten with timestamp-like
+       values `0x687A5C43` → `0x68812B83`); false positive.
+  2. **Invocation check**: execution markers in both functions — **neither is
+     ever invoked** in a 30s run. Registration (static data) present,
+     invocation absent — consistent with the whole-session picture.
+  3. **Kernel-import diff vs xenia**: xenia's load-time import table dump
+     (`docs/reference/xenia-canary-boot-75s.log`) shows the game imports
+     **171 kernel functions; 17 unimplemented under xenia** (`__C_specific_
+     handler`, `Io*ShareAccess/CompleteRequest/InvalidDeviceRequest`,
+     `IoDismountVolume*`, `NetDll_XNetQosLookup`, `ObIsTitleObject`,
+     `RtlCaptureContext`, `RtlUnwind`, `Stfs*Device`, `XamShow*UI`,
+     `XeKeysConsoleSignatureVerification`). **Xenia works with those 17
+     unimplemented → no missing kernel HLE call explains our divergence.**
+     Our traced call set (~95 exports) is a subset consistent with xenia's
+     early boot.
+  - **CONCLUSION (session-10)**: the divergence is not at the kernel boundary
+    at all. It is inside the emulated GPU/driver interaction. **Prime suspect
+    returns to E10**: the boot-time `ExecutePacketType3 overflow (read count
+    0xB0, packet count 0x10000)` skipped part of an init command buffer in an
+    INDIRECT RINGBUFFER. If the skipped region contained the driver's
+    ISR-callback registration or state-setup commands, everything downstream
+    (vblank deferred dispatch, helper B, the WaitAll) never activates —
+    exactly the observed behavior. Xenia processes the same buffer without
+    overflow, which would explain the entire difference between the runs.
+- **Next steps (updated)**:
+  1. **Debug E10 in isolation**: in `ExecuteIndirectBuffer`, when the overflow
+     fires, hexdump the failing packet region (ptr, read offset, the 8 dwords
+     at the failure point) — identify the packet and why `count` reads as
+     0x3FFF (max). Check whether the indirect buffer base/size from the
+     submitting packet is being interpreted correctly (off-by-wrap?).
+  2. Compare xenia's `ExecuteIndirectBuffer`/ring-wrap handling against
+     ReXGlue's for the same packet sequence.
+  3. If E10 skips driver-registration commands, fixing it may clear the ISR
+     registration, the deferred dispatch, helper B, and the WaitAll in one
+     move.
+
 - **Session-6 — generic kernel-call tracer + MAJOR CORRECTION**:
   - Added a generic tracer to `REX_EXPORT` in `include/rex/hook.h`: every
     kernel export now logs its first 40 invocations ("[port-diag] CALL
