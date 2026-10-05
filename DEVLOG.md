@@ -426,6 +426,47 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      registration, the deferred dispatch, helper B, and the WaitAll in one
      move.
 
+- **Session-12 — differential state dump (port side) + field analysis**:
+  Added a t+6s state dump to the vsync watcher (`/tmp/our_state.bin`, regions:
+  ISR struct `0x400F8980..0x400FF000`, dispatch ctx `0x400A1000..2000`,
+  pages `0x83330000`/`0x83380000`). Note: the ISR fields extend to +21556 —
+  the first dump range (0x3680 bytes) was too small; extended to 0x6680.
+  Key state at t+6s (all values BE):
+  - `[drv+16540]` ISR callback = **0** (unregistered — the whole-session
+    blocker, now measured in-place).
+  - `[drv+16548]` = **292 ≈ vblank count** → the driver ISR
+    (`sub_8274F628`) runs EVERY vblank and increments its counter — vblank
+    delivery and counting WORK; progress is not gated on vblank counting.
+  - `[drv+16552]` = 0x1554B804 (timebase), `[drv+16556]` = 0x33 (last
+    processed idx), `[drv+16564]`=1, `[drv+16568]`=1, `[drv+16704]` queue
+    idx = **0** (deferred queue EMPTY), `[drv+21532]`=0, `[drv+21556]`=0x3C
+    (60 — refresh rate).
+  - `[drv+10900]` → `0xFF6A2000` (physical ptr); `[[10900]+16]` = 0 (the
+    source==1 bctrl callback also unregistered), `[[10900]+4]` = 0.
+  - dispatch ctx `0x400A138C`: `[ctx+300]`=0 (no work pending),
+    `[ctx+304]`=1. page8333: `0x833328CC`=signaled, `0x83332910`=**0**
+    (helper B event — the deadlock). page8338: `0x83382910`=1 (TAS flag
+    set), `0x833840AC`=0 (second device's callback never registered,
+    consistent with `sub_8312AFE8` never running).
+  - **Model refinement**: the driver reaches "ISR ticking per vblank, queue
+    empty, both device callbacks unregistered". The late-init stage that
+    registers `[drv+16540]` / `[dev+2004]` never executes. xenia's identical
+    guest must reach that stage — the gate is whatever input the late init
+    awaits (a state set by earlier CP commands, a semaphore, or an event we
+    under-signal).
+- **Next steps (updated)**:
+  1. Find the writer of `[drv+16540]`: it is a plain guest store — scan the
+     generated code for stores where a base register is derived from
+     `[0x822008BC]`-chain (the drv pointer chain) with offset 16540/0x40AC
+     (include negative and SDA-style addressing).
+  2. Identify what calls `sub_8312AFE8`-equivalent for THIS device (the
+     0x8338-page twin `sub_8312AFE8` registers `0x82243760` for the other
+     device — the same function may serve both via its drv argument).
+  3. Cross-check in xenia: run xenia under gdb (AppImage extracted to
+     `/tmp/xenia-extract/squashfs-root`; guest memory is on-demand-mapped,
+     no flat base — read via /proc/pid/mem per page or xenia's own debugger)
+     and dump the SAME fields at the equivalent boot point for comparison.
+
 - **Session-11 — E10 decoded and EXONERATED (red herring)**: instrumented
   `ExecuteIndirectBuffer` with a failure-region dump (in `patches/`). Result:
   - Failing indirect buffer: base `0x1F470000`, 64 words, read offset `0x50`
