@@ -1,3 +1,42 @@
+diff --git a/include/rex/hook.h b/include/rex/hook.h
+index 4ce4f9b..170b3e5 100644
+--- a/include/rex/hook.h
++++ b/include/rex/hook.h
+@@ -11,6 +11,7 @@
+ 
+ #pragma once
+ 
++#include <atomic>
+ #include <cstring>
+ #include <tuple>
+ #include <type_traits>
+@@ -69,10 +70,24 @@
+   }
+ 
+ // Export: hook + register in global registry for kernel ordinal lookup.
+-#define REX_EXPORT(name, function) \
+-  REX_HOOK(name, function)         \
++// PORT DIAGNOSTIC: wrapper logs the first 40 invocations of every kernel
++// export (imports are direct host calls and never pass through the
++// FunctionDispatcher). Drop the PD block once the port reaches gameplay.
++#define REX_EXPORT(name, function)                                                \
++  static void name##_impl(PPCContext& __restrict ctx, uint8_t* base) {            \
++    rex::ppc::HostToGuestFunction<function>(ctx, base);                           \
++  }                                                                               \
++  extern "C" REX_FUNC(name) {                                                     \
++    static std::atomic<uint64_t> pd_cnt{0};                                       \
++    if (pd_cnt.fetch_add(1, std::memory_order_relaxed) < 40) {                    \
++      REXCPU_INFO("[port-diag] CALL " #name " ({})",                              \
++                  (uint64_t)pd_cnt.load(std::memory_order_relaxed));              \
++    }                                                                             \
++    name##_impl(ctx, base);                                                       \
++  }                                                                               \
+   static rex::ppc::detail::PPCFuncRegistrar _ppc_reg_##name(#name, &name);
+ 
++
+ #define REX_EXPORT_STUB(name) \
+   REX_STUB(name)              \
+   static rex::ppc::detail::PPCFuncRegistrar _ppc_reg_##name(#name, &name);
 diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
 index a744375..5e856ad 100644
 --- a/src/graphics/command_processor.cpp
@@ -260,10 +299,10 @@ index 57fd161..2fad9fa 100644
 +REX_EXPORT(__imp__KfRaiseIrql, rex::kernel::xboxkrnl::KfRaiseIrql_entry)
 \ No newline at end of file
 diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
-index bd43109..7e5b5f7 100644
+index bd43109..a9c3b23 100644
 --- a/src/system/function_dispatcher.cpp
 +++ b/src/system/function_dispatcher.cpp
-@@ -13,6 +13,7 @@
+@@ -13,12 +13,14 @@
   *              role as a function dispatch table rather than a CPU emulator.
   */
  
@@ -271,7 +310,14 @@ index bd43109..7e5b5f7 100644
  #include <rex/assert.h>
  #include <rex/dbg.h>
  #include <rex/logging.h>
-@@ -35,8 +36,13 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
+ #include <rex/perf/counter.h>
+ #include <rex/memory.h>
+ #include <rex/ppc/context.h>
++#include <rex/ppc/function.h>
+ #include <rex/runtime.h>
+ #include <rex/system/function_dispatcher.h>
+ #include <rex/system/thread_state.h>
+@@ -35,8 +37,13 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
  }  // namespace
  
  static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
@@ -287,10 +333,29 @@ index bd43109..7e5b5f7 100644
  }
  
  PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
-@@ -66,6 +72,15 @@ bool FunctionDispatcher::Execute(ThreadState* thread_state, uint32_t address) {
+@@ -66,6 +73,34 @@ bool FunctionDispatcher::Execute(ThreadState* thread_state, uint32_t address) {
      REXCPU_ERROR("Execute({:08X}): function not in function table", address);
      return false;
    }
++  // PORT DIAGNOSTIC: generic kernel import trace (first 40 calls per name).
++  {
++    static std::unordered_map<PPCFunc*, const char*>* pd_names = nullptr;
++    static std::unordered_map<std::string, uint64_t>* pd_counts = nullptr;
++    if (!pd_names) {
++      pd_names = new std::unordered_map<PPCFunc*, const char*>();
++      pd_counts = new std::unordered_map<std::string, uint64_t>();
++      for (auto& [n, f] : rex::ppc::GetPPCFuncRegistry()) {
++        (*pd_names)[f] = n;
++        (*pd_counts)[n] = 0;
++      }
++    }
++    if (auto it = pd_names->find(fn); it != pd_names->end()) {
++      uint64_t cnt = ++(*pd_counts)[it->second];
++      if (cnt <= 40) {
++        REXCPU_INFO("[port-diag] CALL {} ({})", it->second, cnt);
++      }
++    }
++  }
 +  // PORT DIAGNOSTIC
 +  if (address == 0x82746D20) {
 +    static uint64_t int_exec = 0;

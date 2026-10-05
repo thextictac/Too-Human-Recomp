@@ -278,6 +278,36 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
   3. Examine `sub_8316E858`/`sub_8312AFE8` call chains (both data-dispatched)
      to find what schedule/queue they belong to.
 
+- **Session-6 — generic kernel-call tracer + MAJOR CORRECTION**:
+  - Added a generic tracer to `REX_EXPORT` in `include/rex/hook.h`: every
+    kernel export now logs its first 40 invocations ("[port-diag] CALL
+    __imp__<Name> (n)"). Necessary because **kernel imports are direct host
+    calls** (`__imp__X` symbols in the generated code) and never pass through
+    `FunctionDispatcher::Execute` — the earlier "guest issues ZERO VdSwap
+    calls" conclusion was an **instrumentation artifact** (the CP-side
+    swap-packet handler can't see kernel-entry calls).
+  - Corrected picture from a 45s run (1930 traced calls, ~95 distinct exports):
+    - **`VdSwap` IS called — exactly once**, 0.6s after a *double* D3D init
+      (VdInitializeRingBuffer ×2, VdEnableRingBufferRPtrWriteBack ×2 — the
+      device was created twice, matching the doubled boot WP writes).
+    - `VdCallGraphicsNotificationRoutines` called once between the inits.
+    - After VdSwap(1): zero ring submissions, zero WP register writes, zero
+      MMIO writes of any kind ("Unknown GPU register" warnings: 0) — the
+      guest driver never submits another buffer.
+    - 34 exports hit the 40-call cap (XeCryptShaUpdate, XNotifyGetNext,
+      XAudio*, Rtl*CriticalSection, NtWait*, Ke*SpinLock…); the trace tail is
+      pure `NtWaitForMultipleObjectsEx` (the park).
+  - Xenia's reference `VdSwap` is behaviorally identical (fills packet, no WP
+    update) and its `VdGetSystemCommandBuffer` has the same 0xBEEF stub — so
+    the WP advance after VdSwap must come from the guest driver (MMIO
+    `0x7FC80714` = CP_RB_WPTR) in xenia's working run too.
+  - **Current blocker, restated**: the guest driver completes init (2 device
+    creations, 8 WP writes, 1 CP_INTERRUPT, 1 VdSwap) but never enters its
+    per-frame submission loop. The gate between "init done" and "frame
+    submissions begin" is the next target — likely the swap-completion or
+    deferred-callback event for the single XAM present.
+  - Tracer location: `include/rex/hook.h` REX_EXPORT (in patches/).
+
 ### E10. `ExecutePacketType3 overflow (read count 000000B0, packet count 00010000)` (OPEN, once per boot)
 - **Symptom**: one failed PM4 packet right as the game first touches the
   ring buffer (19:41:50.629, immediately after `ShaderDumpxe` VFS probe).
