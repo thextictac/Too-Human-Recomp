@@ -207,9 +207,21 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
 - **Conclusion (updated)**: the D3D driver's boot-time interrupt handshake —
   CP_INTERRUPT → ISR `0x8274F628` → (deferred callback `sub_82A051C0`) →
   `KeSetEvent(0x83332910)` → main thread proceeds — never completes. Only ONE
-  CP_INTERRUPT arrives (from init); a healthy driver would emit them per
-  frame. The stall is inside the emulated Xenos/D3D driver interaction, not
-  codegen, not HLE coverage, not scheduling.
+  CP_INTERRUPT arrives (from init). The stall is inside the emulated
+  Xenos/D3D driver interaction, not codegen, not HLE coverage, not scheduling.
+- **Xenia Canary comparison** (75s run from the same ISO on this machine,
+  reference log: `docs/reference/xenia-canary-boot-75s.log`):
+  - Under working xenia the game **also never calls VdSwap in the first 75s** —
+    UE3 boot is simply slow; the guest keeps making progress (continuous
+    `contents.zzz` streaming via DiscImageDevice, XamEnumerate etc.) the whole
+    time, then exits cleanly on request ("Cheap-skate exit!" guest debug
+    string — SK left debug prints in the binary).
+  - Same guest thread names appear (XThreadE5FFD6C0 / E6FFE6C0 …) — identical
+    thread set to our port.
+  - **Reframe**: the port's bug is not "missed swaps" — nothing is supposed to
+    swap this early. It is precisely the D3D-driver boot handshake stall
+    (session-3 trace above). Once cleared, expect a slow streaming boot like
+    xenia's, not instant menus.
 - **Next steps (updated)**:
   1. Trace `sub_8274F628`'s exit path with markers (which branch ends the
      handshake — queue empty? state mismatch?).
