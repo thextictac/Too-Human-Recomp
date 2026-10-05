@@ -112,26 +112,47 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
 - **Result**: Vulkan initializes; RTX 4080 selected (llvmpipe also present as
   device 1 — use `--vulkan_device 0` if selection ever goes wrong).
 
-### E9. Black screen (OPEN)
+### E9. Black screen — ROOT-CAUSE CHAIN IDENTIFIED (fix pending)
 - **Symptom**: window opens fullscreen 3440×1440, presents, audio live, GPU
   executes real PM4 packets (pipelines built from the game's own VS/PS
   microcode), but display stays black. User confirmed visually.
 - **Eliminated causes**:
-  - Frame skipping: was "Skipping Vulkan frame presentation due to async
+  - Frame skipping: "Skipping Vulkan frame presentation due to async
     placeholder draw usage" → fixed with
     `--vulkan_async_skip_incomplete_frames=false` +
     `--async_shader_compilation=false` (skip warnings gone, presents proceed).
   - Guest stall on missing functions: zero unregistered-call logs.
   - Vblank/interrupts: `MarkVblank` ticks at refresh rate and dispatches the
     game's interrupt callback (`SetInterruptCallback(82746D20, 400F8980)`).
-- **Remaining suspects**:
-  1. Guest parked in logo-movie phase: WMVs exist on disc, but no
-     `XamMovie*`/XMedia kernel calls appear — the game may be waiting on
-     something *before* issuing them, or uses an unimplemented decode path.
-  2. PM4 ring-buffer overflow (E10) corrupting early frame setup.
-  3. Resolve→frontbuffer path not producing what VdSwap presents.
-- **Next diagnostic**: `--log-level debug` run; inspect what guest threads
-  block on during the quiet minutes after boot.
+  - **Host presenting wrong thing**: instrumented the CP swap-packet handler
+    (runtime patch #2, `patches/rexglue-runtime-patches.patch`): **the guest
+    issues ZERO VdSwap calls** — every swapchain event seen was the host
+    presenting its own placeholder frames. The black screen is "nothing was
+    ever submitted", not "submitted but invisible".
+- **Established root-cause chain** (debug log + gdb stack sampling):
+  1. Boot proceeds ~1–3s: kernel init, UE3 RHI init, shader storage, pipeline
+     creation — then ALL kernel/VFS/GPU logging stops for the rest of the run.
+  2. gdb sampling (x25s, `kill -INT` on batch gdb; `perf` blocked by
+     `perf_event_paranoid=4`, no root) shows exactly ONE guest thread running:
+     `XThread…F6C0` spinning in guest call-chain
+     `82A78630 → 8296CEA8 → 8296AA98 → 82989068 → 82746938 → 827462C8`
+     (GPU-driver region — `82746D20` is the registered GPU interrupt callback;
+     `827462C8` contains a poll loop reading a QWORD at `[r29]`).
+  3. All ~15 other guest threads are parked in a handful of waits
+     (`82A4BE68` ×many, `82EC66D8`, `82763E80`, `82A041B8`).
+  4. Interpretation: a game thread polls a GPU-progress value (likely the ring
+     buffer read pointer or a swap semaphore) that nothing ever updates; the
+     frame loop never runs; VdSwap is never reached; everything else waits on
+     the frame loop.
+- **Note**: under gdb, the spinner shows SIGSEGV at its `REX_STORE_U32` — that
+  is the runtime's page-protection write-tracking faulting by design; gdb just
+  intercepts it before the runtime handler. Not a real crash (runs are clean
+  outside gdb). Release build has no `ctx` symbols — use RelWithDebInfo for
+  context inspection.
+- **Next steps**: rebuild recomp objects with `linux-amd64-relwithdebinfo`,
+  sample `ctx.r29` to get the polled guest address, then instrument who should
+  write it (CP read-pointer writeback? `VdEnableRingBufferRPtrWriteBack`
+  path? another guest thread's signaled event?).
 
 ### E10. `ExecutePacketType3 overflow (read count 000000B0, packet count 00010000)` (OPEN, once per boot)
 - **Symptom**: one failed PM4 packet right as the game first touches the
@@ -153,6 +174,22 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
   informational (720p window → fullscreen resize).
 
 ---
+
+## Session 2 — 2026-10-04 (diagnostics deep-dive, repo setup)
+
+- Created this DEVLOG; exported the two runtime patches from the volatile
+  `/tmp/rexglue-sdk` checkout to `patches/rexglue-runtime-patches.patch`
+  (#1: discovery trap logs instead of aborting; #2: per-2s VdSwap rate
+  diagnostic in the CP swap-packet handler).
+- Instrumented VdSwap rate → discovered the guest never swaps (E9).
+- gdb stack-sampling methodology that works without root: run the game under
+  `gdb -batch -ex run -ex "thread apply all bt 15"`, `kill -INT <gdb pid>`
+  from the shell after N seconds; gdb prints all stacks and exits. Sampled
+  twice + once with `info args` (Release build → no `ctx` symbol; use
+  RelWithDebInfo next time).
+- Set up this git repo (main branch), pushed to
+  `github.com/thextictac/Too-Human-Recomp`. Remote had a README stub —
+  integrated via `git pull --rebase --allow-unrelated-histories`.
 
 ## Environment notes (volatile!)
 
