@@ -239,18 +239,33 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      data-dispatched (no static callers) and never executes.
   4. Xenia comparison (see below) reframes the target: boot is supposed to be a
      slow streaming crawl; our port must simply survive the D3D boot handshake.
+- **Session-5 probe — registration watcher (complete)**: added a 1Hz polled
+  watcher in the vsync worker (`GraphicsSystem` vsync loop) for guest address
+  `0x400FBC94` (`[0x400F8980+16540]`), plus a gdb hardware watchpoint on the
+  host address (`0x1400fbc94`; guest arena maps identity at host
+  `0x1_00000000`). Result across a 45–60s run: **the slot is never written —
+  0x00000000 the entire time** (watcher + hardware watchpoint agree; gdb needs
+  `handle SIGSEGV nostop noprint pass` due to the runtime's guarded-page
+  faults). The D3D driver ISR callback registration never occurs.
+  - Note: `GetPhysicalAddress(0x400FBC94)` returns unmapped — the
+    `0x400xxxxx` region must be read via `TranslateVirtual` (physical-alias
+    mapping).
+  - Re-verified the wait semantics: main thread's
+    `KeWaitForMultipleObjects(2, WaitAll, Timeout=NULL)` — truly infinite.
+  - The registration code is not a constant-offset store in the generated code
+    (all `+16540`/`-16540` constant sites target other structs or counters) —
+    it must use a runtime-computed address, or live behind the same gate that
+    parks the main thread.
 - **Next steps (updated)**:
-  1. Find the initializer of heap struct `0x400F8980` (the interrupt
-     user_data): instrument its creation site (who passes it to
-     VdSetGraphicsInterruptCallback) and check whether field +16540 is ever
-     written (add a polled watcher in the vsync worker for
-     `[0x400F8980+16540]` transitions).
-  2. Determine what dispatches `sub_82A051C0`: its address must live in a
-     guest DATA table — compare the loaded image's data around the driver
-     dispatch tables against a hexdump expectation, or break on
-     `REX_CALL_INDIRECT_FUNC` targets 0x82A05xxx at runtime.
-  3. Xenia verbose comparison of the first 10s of kernel calls (F> trace) to
-     spot the HLE call our port never receives.
+  1. Compare kernel-call traces: run xenia-canary verbose for the first ~30s
+     and diff its F> kernel trace against our port's early boot — the missing
+     call is likely the gate that unlocks D3D init (and eventually the
+     registration).
+  2. Investigate the stubbed `VdGetSystemCommandBuffer` (writes 0xBEEF0000/1
+     markers) — if the guest dereferences those as pointers into its driver
+     context, the ISR struct's registration field would never be reached.
+  3. Examine `sub_8316E858`/`sub_8312AFE8` call chains (both data-dispatched)
+     to find what schedule/queue they belong to.
 
 ### E10. `ExecutePacketType3 overflow (read count 000000B0, packet count 00010000)` (OPEN, once per boot)
 - **Symptom**: one failed PM4 packet right as the game first touches the
