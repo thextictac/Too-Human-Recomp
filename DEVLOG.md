@@ -426,6 +426,42 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      registration, the deferred dispatch, helper B, and the WaitAll in one
      move.
 
+- **Session-11 — E10 decoded and EXONERATED (red herring)**: instrumented
+  `ExecuteIndirectBuffer` with a failure-region dump (in `patches/`). Result:
+  - Failing indirect buffer: base `0x1F470000`, 64 words, read offset `0x50`
+    at failure, capacity `0x100`.
+  - The failing packet is the dword at `+0x4C`: **`0xFFFFFFFF`** — read as a
+    type-3 header it yields count `0x4000` words ("packet count 0x10000")
+    against `0xB0` available — the exact overflow values. It is filler after
+    ~19 words of valid commands (type-0 writes incl. `RB_BC_CONTROL=0x200E`,
+    a type-3 indirect-buffer-priv header, scratch-register traffic).
+  - Behavior comparison: xenia's `ExecutePacket`/`ExecuteIndirectBuffer` are
+    equivalent (`packet==0` skip, overflow → fail → break; `assert_always` is
+    a no-op in release). **Both engines skip this packet identically** — E10
+    is either filler the CP never was meant to execute or an intentional
+    error-handling probe by the driver. It is NOT the root cause; the
+    session-10 refocusing on E10 was wrong.
+  - Diagnostic left in place (fires once per boot); candidate for removal.
+- **Where this leaves the hunt**: with the kernel boundary (session-10) and
+  the CP packet stream (E10) both exonerated, the remaining divergence is in
+  guest-internal driver state reached only through *timing- or GPU-side-event
+  dependent* paths — i.e., something our runtime state doesn't match xenia's
+  by the time the driver finishes init. Candidate techniques for the next
+  session, in order of expected yield:
+  1. **Differential memory snapshot**: dump the driver context regions
+     (`0x400F8980` struct, `0x8333`/`0x8338` pages) from our port at t+5s;
+     run xenia with a memory-dump capability (or gdb) at the equivalent point
+     and diff the driver state — the first differing field is the stalled
+     state machine.
+  2. **Vblank-count dependence**: check whether any driver progress is
+     gated on the vblank COUNT (e.g., "after N vblanks, advance init state")
+     — our vblank counter behavior may differ (xenia increments a guest-
+     visible counter per vblank; verify ours matches location + rate).
+  3. **XamUI/XMP thread review**: the single VdSwap came from XAM; check
+     whether XAM's device (0x8338 page) completion is what unblocks the
+     game's device — i.e., trace what XAM does after its present in xenia's
+     run (thread states over time) vs ours.
+
 - **Session-6 — generic kernel-call tracer + MAJOR CORRECTION**:
   - Added a generic tracer to `REX_EXPORT` in `include/rex/hook.h`: every
     kernel export now logs its first 40 invocations ("[port-diag] CALL
