@@ -33,6 +33,125 @@ index a744375..eb5db3a 100644
    IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
  
    ++counter_;
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 8f2fcb0..9dbcda7 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -298,6 +298,15 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
+   if (!interrupt_callback_) {
+     return;
+   }
++  // PORT DIAGNOSTIC: interrupt dispatch rate. Remove once game runs.
++  {
++    static uint64_t int_count = 0;
++    ++int_count;
++    if (int_count % 120 == 1) {
++      REXGPU_INFO("[port-diag] GPU interrupt dispatch #{} (cb={:08X})", int_count,
++                  interrupt_callback_);
++    }
++  }
+ 
+   auto thread = system::XThread::GetCurrentThread();
+   assert_not_null(thread);
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+index 57fd161..893df9d 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+@@ -39,6 +39,35 @@
+ #include <rex/thread/atomic.h>
+ #include <rex/thread/mutex.h>
+ 
++// PORT DIAGNOSTIC: wait/signal graph logging. Remove once game runs.
++#include <unordered_set>
++#include <mutex>
++namespace {
++std::mutex g_portdiag_mutex;
++std::unordered_set<std::string> g_portdiag_seen;
++void PortDiagWait(const char* kind, uint32_t obj, uint64_t timeout, bool has_timeout) {
++  auto* t = rex::system::XThread::GetCurrentThread();
++  uint32_t tid = t ? t->thread_id() : 0;
++  std::lock_guard<std::mutex> lock(g_portdiag_mutex);
++  auto key = std::string(kind) + std::to_string(tid) + "_" + std::to_string(obj);
++  if (g_portdiag_seen.insert(key).second) {
++    REXKRNL_INFO("[port-diag] {} thread={} obj={:#x} timeout={} (blocking={})",
++                 kind, tid, obj, has_timeout ? (int64_t)timeout : -1,
++                 (!has_timeout || timeout != 0) ? "YES" : "no");
++  }
++}
++void PortDiagSignal(const char* kind, uint32_t obj) {
++  auto* t = rex::system::XThread::GetCurrentThread();
++  uint32_t tid = t ? t->thread_id() : 0;
++  std::lock_guard<std::mutex> lock(g_portdiag_mutex);
++  auto key = std::string(kind) + "sig" + std::to_string(tid) + "_" + std::to_string(obj);
++  if (g_portdiag_seen.insert(key).second) {
++    REXKRNL_INFO("[port-diag] {} thread={} obj={:#x}", kind, tid, obj);
++  }
++}
++}  // namespace
++
++
+ namespace rex::kernel::xboxkrnl {
+ using namespace rex::system;
+ using rex::runtime::current_ppc_context;
+@@ -473,6 +502,7 @@ uint32_t xeKeSetEvent(X_KEVENT* event_ptr, uint32_t increment, uint32_t wait) {
+ }
+ 
+ u32 KeSetEvent_entry(ppc_ptr_t<X_KEVENT> event_ptr, u32 increment, u32 wait) {
++  PortDiagSignal("SETEVENT", event_ptr.guest_address());
+   return xeKeSetEvent(event_ptr, increment, wait);
+ }
+ 
+@@ -844,8 +874,18 @@ u32 KeWaitForSingleObject_entry(mapped_void object_ptr, u32 wait_reason, u32 pro
+   // object_ptr.guest_address(), (uint32_t)wait_reason,
+   //(uint32_t)processor_mode, (uint32_t)alertable,
+   // timeout_ptr ? (int64_t)timeout : -1);
++  PortDiagWait("WAIT1", object_ptr.guest_address(), timeout, timeout_ptr != nullptr);
++  auto pd_start = std::chrono::steady_clock::now();
+   auto result = xeKeWaitForSingleObject(object_ptr, wait_reason, processor_mode, alertable,
+                                         timeout_ptr ? &timeout : nullptr);
++  {
++    auto pd_secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - pd_start).count();
++    if (pd_secs > 0.5) {
++      auto* t = rex::system::XThread::GetCurrentThread();
++      REXKRNL_INFO("[port-diag] WAIT1-RETURNED thread={} obj={:#x} waited={:.1f}s",
++                   t ? t->thread_id() : 0, object_ptr.guest_address(), pd_secs);
++    }
++  }
+   // REXKRNL_IMPORT_RESULT("KeWaitForSingleObject", "{:#x}", result);
+   return result;
+ }
+@@ -857,6 +897,7 @@ u32 NtWaitForSingleObjectEx_entry(u32 object_handle, u32 wait_mode, u32 alertabl
+   auto object = REX_KERNEL_OBJECTS()->LookupObject<XObject>(object_handle);
+   if (object) {
+     uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
++    PortDiagWait("NTWAIT", object_handle, timeout, timeout_ptr != nullptr);
+     result = object->Wait(3, wait_mode, alertable, timeout_ptr ? &timeout : nullptr);
+     if (alertable && result == X_STATUS_USER_APC) {
+       XThread::GetCurrentThread()->DeliverAPCs();
+@@ -885,6 +926,8 @@ u32 KeWaitForMultipleObjects_entry(u32 count, mapped_u32 objects_ptr, u32 wait_t
+   }
+ 
+   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
++  for (uint32_t n = 0; n < count; n++)
++    PortDiagWait("WAITN", objects_ptr[n], timeout, timeout_ptr != nullptr);
+   X_STATUS result = XObject::WaitMultiple(
+       uint32_t(objects.size()), reinterpret_cast<XObject**>(objects.data()), wait_type, wait_reason,
+       processor_mode, alertable, timeout_ptr ? &timeout : nullptr);
+@@ -909,6 +952,7 @@ uint32_t xeNtWaitForMultipleObjectsEx(uint32_t count, rex::be<uint32_t>* handles
+     objects.push_back(std::move(object));
+   }
+ 
++  for (uint32_t n = 0; n < count; n++) PortDiagWait("NTWAITN", handles[n], timeout_ptr ? *timeout_ptr : 0, timeout_ptr != nullptr);
+   auto result = XObject::WaitMultiple(count, reinterpret_cast<XObject**>(objects.data()), wait_type,
+                                       6, wait_mode, alertable, timeout_ptr);
+   if (alertable && result == X_STATUS_USER_APC) {
+@@ -1551,4 +1595,4 @@ REX_EXPORT_STUB(__imp__KeStallExecutionProcessor);
+ REX_EXPORT_STUB(__imp__KeSweepDcacheRange);
+ REX_EXPORT_STUB(__imp__KeSweepIcacheRange);
+ REX_EXPORT_STUB(__imp__KeTestAlertThread);
+-REX_EXPORT(__imp__KfRaiseIrql, rex::kernel::xboxkrnl::KfRaiseIrql_entry)
++REX_EXPORT(__imp__KfRaiseIrql, rex::kernel::xboxkrnl::KfRaiseIrql_entry)
+\ No newline at end of file
 diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
 index bd43109..3bc3a47 100644
 --- a/src/system/function_dispatcher.cpp

@@ -149,10 +149,45 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
   intercepts it before the runtime handler. Not a real crash (runs are clean
   outside gdb). Release build has no `ctx` symbols — use RelWithDebInfo for
   context inspection.
-- **Next steps**: rebuild recomp objects with `linux-amd64-relwithdebinfo`,
-  sample `ctx.r29` to get the polled guest address, then instrument who should
-  write it (CP read-pointer writeback? `VdEnableRingBufferRPtrWriteBack`
-  path? another guest thread's signaled event?).
+- **Session-2 deep dive — corrected + completed diagnosis** (all evidence via
+  runtime instrumentation, see `patches/rexglue-runtime-patches.patch`):
+  1. **gdb sampling caveat**: batch-gdb stops the process at the runtime's
+     first guarded-page store (by-design SIGSEGV in memory tracking). Early
+     "spinner thread" samples were frozen boot moments, not long-lived spins.
+     Fix: `handle SIGSEGV nostop noprint pass` before `run`.
+  2. **True 60s sample: ALL 17 guest threads blocked** in
+     `rex::thread::PosixConditionBase::Wait/WaitMultiple` — no guest code
+     running at all.
+  3. **Wait/signal graph** (instrumented KeWait/NtWait/KeSetEvent): ~20 threads
+     park on distinct kernel event handles (`0xf80000xx`, infinite timeout);
+     only **2 SETEVENTs ever fire** — a thread 2 ↔ thread 14 handshake.
+     **Thread 2 (main game thread) waits for TWO events
+     (`WAITN 0x833328cc + 0x83332910`); thread 14 signals the first; nothing
+     in the entire run ever signals `0x83332910`.** Two worker threads
+     (18/19) poll on 30ms/0ms timeouts — the only live threads.
+  4. **GPU interrupts fire correctly**: instrumented dispatch = 60/s at
+     callback `0x82746D20` on the vsync thread. Yet no KeSetEvent from it —
+     the interrupt handler runs but never signals the event the main thread
+     needs.
+  5. Read-pointer writeback IS implemented in the CP
+     (`read_ptr_writeback_ptr_` written after each primary buffer execution).
+  - **Conclusion**: main thread waits on an event that should be signaled by
+    the GPU/driver sync path (or XAM notification delivery) once the frame
+    pipeline makes progress; the frame pipeline waits for the main thread —
+    a boot-order stall between the guest's D3D/device sync and the emulated
+    GPU driver, not a codegen or HLE-coverage gap.
+- **Next steps (in order)**:
+  1. Instrument `UpdateWritePointer` — does the guest ever submit another
+     primary buffer post-boot? (Is the CP fed at all?)
+  2. Trace what the GPU interrupt callback (0x82746D20 region, generated code
+     in partition of sub_82746938/827462C8) actually does per vblank — which
+     MMIO reads/guest checks gate its KeSetEvent.
+  3. Check XAM notification delivery (the game created listeners with masks
+     0x5/0x6/0x23 at boot) — a missing initial XNotify could be the real
+     gate for the boot sequence.
+  4. RelWithDebInfo recomp objects still lack `ctx` var symbols
+     (gline-tables-only); patch `rexglue_apply_recomp_settings` if ctx
+     inspection is needed.
 
 ### E10. `ExecutePacketType3 overflow (read count 000000B0, packet count 00010000)` (OPEN, once per boot)
 - **Symptom**: one failed PM4 packet right as the game first touches the
