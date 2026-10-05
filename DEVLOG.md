@@ -278,6 +278,42 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
   3. Examine `sub_8316E858`/`sub_8312AFE8` call chains (both data-dispatched)
      to find what schedule/queue they belong to.
 
+- **Session-7 — WP write site found + structural reinterpretation**:
+  1. **The CP_RB_WPTR write site is `sub_827460E0`**
+     (generated `toohuman_recomp.21.cpp:10528`,
+     `REX_MM_STORE_U32(ctx.r11.u32 + 1812, ctx.r29.u32)` — note the macro is
+     `REX_MM_STORE_*`, not "PPC_MM_*"; 1812 = 0x714). The function is the
+     D3D driver's command-buffer submit: iterates {ptr,count} pairs, copies
+     into the ring, updates cursor [dev+10952], kicks WP, then pokes the
+     notification struct [dev+21532]. It ran at boot (8 WP writes) and never
+     again — the gate is upstream: **the driver's per-frame submit loop never
+     starts**.
+  2. **Guest-memory scan for ptr→`0x82A051C0`** found exactly two hits:
+     `0x822d8ce0` (image data) and **`0x83332900`** — the "kick event" slot!
+     Reinterpretation: the `0x833328xx/9xxx` globals are NOT plain events but
+     **kernel-event + work-item records**: hexdump shows 16-byte records with
+     "REX\0" tags and kernel handles (`0xF800013C`); `0x833328F0` reads
+     `0x00000001` (dispatcher header, signaled) and `0x83332900` holds the
+     callback pointer `0x82A051C0`. `sub_82A051C0`'s `r3 == 0x83332900` check
+     is the handler matching its own work-item address.
+  3. **`0x822D8CC0` is a static dispatch table** of {handler, param} pairs —
+     8 entries (`82A04C38/82A04DB8/82A04F90/82A05078/82A051C0/82A05208/
+     82A052E8/82A053F0` with heap params `0x4000xxxx`). Helper B is entry #4.
+     Something must walk this table and dispatch (likely on the kick event).
+  4. Dead ends closed: `VdCallGraphicsNotificationRoutines` is an identical
+     stub in xenia; `VdRegisterGraphicsNotification` is never called by the
+     game (only IoDismountVolumeByFileHandle fires as stub); the WP write
+     never happens post-init because the submit loop never starts.
+- **Next steps (updated)**:
+  1. Find the walker of table `0x822D8CC0`: search generated code for
+     `lis -32243` + loads at offsets 0x8CC0..0x8D00, or instrument the
+     handler entries (marker in each of the 8) to see if ANY get dispatched.
+  2. Check who wakes on event `0x833328F0` (helper A's thread waits on it —
+     does the dispatcher share that wake?) and what pops `0x83332900`.
+  3. Re-examine helper-B event signaling via `NtSetEvent` (instrumented now
+     via the generic tracer) — the earlier "never signaled" used KeSetEvent
+     only.
+
 - **Session-6 — generic kernel-call tracer + MAJOR CORRECTION**:
   - Added a generic tracer to `REX_EXPORT` in `include/rex/hook.h`: every
     kernel export now logs its first 40 invocations ("[port-diag] CALL
