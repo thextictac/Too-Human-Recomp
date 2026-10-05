@@ -171,23 +171,56 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      needs.
   5. Read-pointer writeback IS implemented in the CP
      (`read_ptr_writeback_ptr_` written after each primary buffer execution).
-  - **Conclusion**: main thread waits on an event that should be signaled by
-    the GPU/driver sync path (or XAM notification delivery) once the frame
-    pipeline makes progress; the frame pipeline waits for the main thread —
-    a boot-order stall between the guest's D3D/device sync and the emulated
-    GPU driver, not a codegen or HLE-coverage gap.
-- **Next steps (in order)**:
-  1. Instrument `UpdateWritePointer` — does the guest ever submit another
-     primary buffer post-boot? (Is the CP fed at all?)
-  2. Trace what the GPU interrupt callback (0x82746D20 region, generated code
-     in partition of sub_82746938/827462C8) actually does per vblank — which
-     MMIO reads/guest checks gate its KeSetEvent.
-  3. Check XAM notification delivery (the game created listeners with masks
-     0x5/0x6/0x23 at boot) — a missing initial XNotify could be the real
-     gate for the boot sequence.
-  4. RelWithDebInfo recomp objects still lack `ctx` var symbols
-     (gline-tables-only); patch `rexglue_apply_recomp_settings` if ctx
-     inspection is needed.
+
+- **Session-3 deep dive — the D3D driver boot handshake, fully traced**:
+  Addressing convention note: `lis rN,-31949` ⇒ base `0x83330000`; events are
+  `0x833328CC` (+10444), `0x833328F0` (+10480), `0x83332900` (+10496),
+  `0x83332910` (+10512).
+  1. **Guest stops feeding the GPU**: only 8 `UpdateWritePointer` calls ever —
+     4 boot submissions (write idx 22→31) then the *same 4 values repeated*
+     0.6s later (a second init attempt). Nothing afterwards. (Instrumented
+     `CommandProcessor::UpdateWritePointer`.)
+  2. **Vblank path works**: MMIO reg `0x7FC86544` (= dword 0x1951) is
+     special-cased in `GraphicsSystem::ReadRegister` → returns 1 ("vblank");
+     the guest vblank handler (`sub_82746D20`, source==0) sees bit0 set and
+     calls its deferred-list worker (`sub_8274F528`) at 60Hz.
+  3. **Sync design decoded** (generated code of `sub_82A04820` et al.):
+     - main thread `sub_82A04820`: `KeSetEvent(0x833328F0)` (kick helper A),
+       then `KeWaitForMultipleObjects(wait-all: 0x833328CC, 0x83332910)`.
+     - helper A thread (start `0x82A041B8`): waits kick → works →
+       `KeSetEvent(0x833328CC)` ✓ **observed working**.
+     - helper B logic `sub_82A051C0`: would `KeSetEvent(0x83332910)` —
+       **never executes** (verified: one-shot fprintf marker in generated
+       code; zero hits in 25s stderr).
+     - No thread ever waits on `0x83332900`; all 17 `ExCreateThread` calls
+       succeed (start addrs logged); `sub_82A051C0` has **no static callers
+       and no code references** — it is invoked only via a function pointer
+       stored in guest DATA (the D3D driver's dispatch struct).
+  4. **The source-1 (CP_INTERRUPT) path fires exactly once**: one
+     `CP_INTERRUPT` PM4 packet in the whole run (from the boot init command
+     buffer), `cpu_mask=0x4` → `DispatchInterruptCallback(1, cpu 2)` → guest
+     handler source==1 path → `bctrl` to the driver's registered ISR at
+     **`0x8274F628`** (verified via generated-code marker). The ISR runs once,
+     does timing/queue bookkeeping, and the handshake to signal `0x83332910`
+     never completes. (`sub_82A051C0` is *not* the ISR — it's a
+     data-dispatched callback that should run via the ISR/deferred-list path.)
+- **Conclusion (updated)**: the D3D driver's boot-time interrupt handshake —
+  CP_INTERRUPT → ISR `0x8274F628` → (deferred callback `sub_82A051C0`) →
+  `KeSetEvent(0x83332910)` → main thread proceeds — never completes. Only ONE
+  CP_INTERRUPT arrives (from init); a healthy driver would emit them per
+  frame. The stall is inside the emulated Xenos/D3D driver interaction, not
+  codegen, not HLE coverage, not scheduling.
+- **Next steps (updated)**:
+  1. Trace `sub_8274F628`'s exit path with markers (which branch ends the
+     handshake — queue empty? state mismatch?).
+  2. Compare with Xenia Canary running the same title (it reportedly runs):
+     capture its boot behavior — does the game call VdSwap there, how many
+     CP_INTERRUPTs, same driver code path? This defines "expected".
+  3. Check `sub_82A05208`/`sub_82A04330`/`sub_82643580` (the +10496/-10512
+     referencers) for the queue-insertion that was supposed to schedule
+     `sub_82A051C0`.
+  4. The single repeated init sequence (write idx 22→31 twice) suggests the
+     D3D driver retried init — find its retry trigger and what it waits on.
 
 ### E10. `ExecutePacketType3 overflow (read count 000000B0, packet count 00010000)` (OPEN, once per boot)
 - **Symptom**: one failed PM4 packet right as the game first touches the
