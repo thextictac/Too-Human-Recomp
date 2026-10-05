@@ -252,6 +252,17 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
     mapping).
   - Re-verified the wait semantics: main thread's
     `KeWaitForMultipleObjects(2, WaitAll, Timeout=NULL)` — truly infinite.
+  - **Divergence quantified vs xenia**: 40s trace run — our port reads
+    `contents.zzz` **0 times**; xenia's guest streams it continuously
+    (UE3 boot). Our log tail is pure vblank dispatch (#2281 = 38s of 60Hz,
+    all source=0). The D3D handshake stall is the sole blocker between us
+    and a normal slow boot.
+  - `--log_noisy` flag didn't produce import traces (flag parse or macro
+    gating to revisit); REXKRNL_IMPORT_TRACE is wired to
+    `REXCVAR_GET(log_noisy)` in `include/rex/logging/macros.h:25`.
+  - Note: `sub_8312AFE8` (the never-run registration candidate) sits inside
+    the import-thunk address region (0x8312Exxx = import thunks); treat
+    "functions" there with suspicion — it may be a mis-analyzed import stub.
   - The registration code is not a constant-offset store in the generated code
     (all `+16540`/`-16540` constant sites target other structs or counters) —
     it must use a runtime-computed address, or live behind the same gate that
