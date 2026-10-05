@@ -345,6 +345,46 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      driver during device init (check the second device's init path, 0x8338
      page, for writes to `0x83332900`).
 
+- **Session-9 — helper A decoded; work item is static data; dispatch chain
+  mapped to its roots**:
+  1. **Helper A (`sub_82A041B8`) fully decoded** — its loop is:
+     `KeWaitForSingleObject(0x833328F0 kick, infinite)` → bit-test `[ctx+300]`
+     (work flag; main stores it before kicking) → if set: `sub_82A03800(ctx)`
+     + `dispatcher(ctx, 1)` → `KeSetEvent(0x833328CC done)` → loop. It **never
+     references `0x83332900`**; the loop exits (thread terminates) when
+     `[ctx+300] == 0`. Helper A is healthy and unrelated to the work item.
+  2. **The work item is STATIC XEX data**: gdb hardware watchpoint on the
+     slot (`host 0x1833332900`; image arena maps at `+0x180000000`) never
+     fired across a 40s run, yet the value is present — it ships in the
+     image's data section. No runtime writer exists to find.
+  3. **Dispatch chain mapped**: the queue processor is **`sub_82606DA0`**
+     (partition 212): gates on `[r31+10500]` (enabled), `[r31+10496]` vs
+     `[r31+10492]` (idx vs high-water), then `bctrl [[r31+0]+2004]` — the
+     handler comes from `[device+2004]`. Sole caller: **`sub_826065E0`**, a
+     switch on event ids 13–17 (storing `[+8440]`, poking `[+21532]`…),
+     itself data-dispatched from `sub_82606D90` / `sub_8263B260` (no static
+     callers — registered via guest data/vtables).
+  - **Updated model**: the D3D driver registers a per-device handler
+    (`[dev+2004]`) invoked by the id-13..17 event switch, which drains a
+    command queue whose completion semantics signal `0x83332910` (via the
+    helper-B-class handlers). In our port the switch never fires for the
+    relevant id — the remaining question is what invokes
+    `sub_82606D90`/`sub_8263B260` (vtable slot? kernel callback?) and why it
+    stays silent while xenia's run drives it.
+- **Next steps (updated)**:
+  1. Print the host addresses of `sub_82606D90`/`sub_8263B260`'s registration
+     sites: scan guest memory for pointers to them (same technique as the
+     `82A051C0` scan) to find their vtables/callback registrations.
+  2. Instrument `sub_82606DA0` and `sub_826065E0` entry markers to confirm
+     they never execute in our run (expected) — then set gdb watchpoints on
+     their registration sites to see if *registration* happens while
+     *invocation* doesn't.
+  3. Compare against xenia: the same vtable/registration scan on a xenia
+     memory dump is not directly possible, but xenia's trace of the guest's
+     MMIO/interrupt sequence for the same window (session-2 reference log)
+     may show the trigger (e.g., a specific `Vd*` call or MMIO write) our
+     port never performs.
+
 - **Session-6 — generic kernel-call tracer + MAJOR CORRECTION**:
   - Added a generic tracer to `REX_EXPORT` in `include/rex/hook.h`: every
     kernel export now logs its first 40 invocations ("[port-diag] CALL
