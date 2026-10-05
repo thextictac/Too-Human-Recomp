@@ -222,17 +222,35 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
     swap this early. It is precisely the D3D-driver boot handshake stall
     (session-3 trace above). Once cleared, expect a slow streaming boot like
     xenia's, not instant menus.
+- **Session-4 probes — ISR path resolved, registration gap isolated**:
+  1. ISR `sub_8274F628` ran its increment path (passed queue-full/ms checks),
+     then hit the callback dispatch: **`[drv+16540] == 0`** — skip-callback
+     branch taken (verified with generated-code markers + slot-check print:
+     `drv=400f8980 cb=00000000`).
+  2. **drv is a HEAP struct (`0x400F8980`)** — the VdSetGraphicsInterruptCallback
+     user_data — *not* the `0x8333xxxx` globals; the constant-based store sites
+     (`sub_8312AFE8` → `0x833840AC`, never executes; `sub_82F52078` →
+     `0x833440AC`, executes but different struct) are red herrings for this
+     slot. Whoever registers `[0x400FBC94]` (+16540 on the heap struct) has not
+     run by the time the single CP_INTERRUPT arrives.
+  3. The single CP_INTERRUPT (cpu_mask=4) at boot may be normal-by-design
+     (init-time, handler not yet registered = no-op). The abnormal part remains:
+     **nothing ever signals `0x83332910`**, and its signaler `sub_82A051C0` is
+     data-dispatched (no static callers) and never executes.
+  4. Xenia comparison (see below) reframes the target: boot is supposed to be a
+     slow streaming crawl; our port must simply survive the D3D boot handshake.
 - **Next steps (updated)**:
-  1. Trace `sub_8274F628`'s exit path with markers (which branch ends the
-     handshake — queue empty? state mismatch?).
-  2. Compare with Xenia Canary running the same title (it reportedly runs):
-     capture its boot behavior — does the game call VdSwap there, how many
-     CP_INTERRUPTs, same driver code path? This defines "expected".
-  3. Check `sub_82A05208`/`sub_82A04330`/`sub_82643580` (the +10496/-10512
-     referencers) for the queue-insertion that was supposed to schedule
-     `sub_82A051C0`.
-  4. The single repeated init sequence (write idx 22→31 twice) suggests the
-     D3D driver retried init — find its retry trigger and what it waits on.
+  1. Find the initializer of heap struct `0x400F8980` (the interrupt
+     user_data): instrument its creation site (who passes it to
+     VdSetGraphicsInterruptCallback) and check whether field +16540 is ever
+     written (add a polled watcher in the vsync worker for
+     `[0x400F8980+16540]` transitions).
+  2. Determine what dispatches `sub_82A051C0`: its address must live in a
+     guest DATA table — compare the loaded image's data around the driver
+     dispatch tables against a hexdump expectation, or break on
+     `REX_CALL_INDIRECT_FUNC` targets 0x82A05xxx at runtime.
+  3. Xenia verbose comparison of the first 10s of kernel calls (F> trace) to
+     spot the HLE call our port never receives.
 
 ### E10. `ExecutePacketType3 overflow (read count 000000B0, packet count 00010000)` (OPEN, once per boot)
 - **Symptom**: one failed PM4 packet right as the game first touches the
