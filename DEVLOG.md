@@ -466,6 +466,14 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      `/tmp/xenia-extract/squashfs-root`; guest memory is on-demand-mapped,
      no flat base — read via /proc/pid/mem per page or xenia's own debugger)
      and dump the SAME fields at the equivalent boot point for comparison.
+  4. **Static-search result (addendum)**: offset `16540` appears ONLY as
+     `lfs` float READS (partitions 103–112, D3D helper cluster) and in the
+     ISR's `lwz` — **no store to +16540 exists anywhere in the generated
+     code**. The registration store comes from code that never executes in
+     our run (or via a bulk SIMD copy from a source structure that itself is
+     never populated). xenia extraction for its-side dumps:
+     `/tmp/xenia-extract/squashfs-root/usr/bin/xenia_canary` (stripped; guest
+     memory on-demand-mapped — no flat base).
 
 - **Session-11 — E10 decoded and EXONERATED (red herring)**: instrumented
   `ExecuteIndirectBuffer` with a failure-region dump (in `patches/`). Result:
