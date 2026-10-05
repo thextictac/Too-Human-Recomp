@@ -1,0 +1,63 @@
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index a744375..eb5db3a 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -21,6 +21,7 @@
+ #include <rex/dbg.h>
+ #include <rex/perf/counter.h>
+ #include <rex/chrono/clock.h>
++#include <chrono>
+ #include <rex/graphics/command_processor.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/graphics_system.h>
+@@ -958,6 +959,22 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
+   uint32_t frontbuffer_height = reader->ReadAndSwap<uint32_t>();
+   reader->AdvanceRead((count - 4) * sizeof(uint32_t));
+ 
++  // PORT DIAGNOSTIC: per-second VdSwap rate — proves the guest main loop is
++  // submitting frames. Remove once rendering is confirmed.
++  {
++    static uint32_t swap_count = 0;
++    static std::chrono::steady_clock::time_point last_report =
++        std::chrono::steady_clock::now();
++    ++swap_count;
++    auto now = std::chrono::steady_clock::now();
++    if (now - last_report >= std::chrono::seconds(2)) {
++      REXGPU_INFO("[port-diag] VdSwap rate: {} swaps in last 2s (total {})",
++                  swap_count, swap_count);
++      swap_count = 0;
++      last_report = now;
++    }
++  }
++
+   IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
+ 
+   ++counter_;
+diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
+index bd43109..3bc3a47 100644
+--- a/src/system/function_dispatcher.cpp
++++ b/src/system/function_dispatcher.cpp
+@@ -13,6 +13,7 @@
+  *              role as a function dispatch table rather than a CPU emulator.
+  */
+ 
++#include <unordered_set>
+ #include <rex/assert.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+@@ -35,8 +36,13 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
+ }  // namespace
+ 
+ static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
+-  REX_FATAL("Call to invalid or unregistered function at guest address 0x{:08X}",
+-            ctx.last_indirect_target);
++  // PORT DISCOVERY PATCH: log instead of abort so one boot reveals every
++  // unregistered indirect target. Revert for release builds.
++  static std::unordered_set<uint32_t> reported;
++  if (reported.insert(ctx.last_indirect_target).second) {
++    REXLOG_ERROR("[port-discovery] unregistered function call: 0x{:08X}",
++                 ctx.last_indirect_target);
++  }
+ }
+ 
+ PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {

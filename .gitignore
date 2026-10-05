@@ -1,0 +1,15 @@
+# Disc extraction (user-provided game data — never commit)
+/extracted/
+*.iso
+
+# Build outputs
+/port/out/
+/port/userdata/
+/logs/
+
+# Generated recompilation output (reproducible via toohuman_codegen)
+/port/generated/default/
+
+# Runtime artifacts
+*.log
+core
