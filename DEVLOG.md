@@ -314,6 +314,37 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      via the generic tracer) — the earlier "never signaled" used KeSetEvent
      only.
 
+- **Session-8 — dispatcher identified, dispatch chain measured**:
+  1. The dispatch walker is **`sub_82A049F0(table, id)`** (generated partition
+     40): `clrlwi id`, skip if id==0, walk entries calling `handler(r3=table)`.
+     Called from exactly 3 sites: main's `sub_82A04820` (AFTER the WaitAll —
+     never runs), `sub_82A04280` (id=0 → no-op), and helper A's `sub_82A041B8`
+     (id=1, `tbl=[thr+13584]`).
+  2. **Measured dispatch trace** (60-call cap): `tbl=400a138c id=01` — always
+     the driver context at `0x400A138C`, id 1, from helper A's thread. The
+     static table `0x822D8CC0` is never dispatched (it is initial registration
+     data, likely copied into per-context lists at init).
+  3. Handler instrumentation across the 8 table entries: **4 dispatch**
+     (`82A04C38`, `82A04DB8` with r3=0x400A138C; `82A052E8`, `82A053F0` with
+     r3=0x7018F6D0 — a different context!). Helper B (`82A051C0`) and
+     `82A05208`/`82A04F90`/`82A05078` never do. Helper B requires
+     `r3 == 0x83332900` — its own work-item address — i.e. a dispatch with the
+     work-item as "table", which **nothing ever performs**.
+  4. Related find: `sub_8247BC50` does a test-and-set on bit0 of
+     `[0x83382910]` (note: 0x8338 page — the *second* device's globals; the
+     never-executed `sub_8312AFE8` writes `0x82243760` to `0x833840AC`). The
+     0x8338 page (second device) is largely inert.
+- **Next steps (updated)**:
+  1. Decode helper A's full loop (`sub_82A041B8`, partition 70): after
+     dispatching id=1 on the driver context, what does it wait on next, and
+     does its loop ever process the `0x83332900` work item?
+  2. Find any code calling *anything* with `r3=0x83332900`: scan generated
+     code for `addi/lis` materializing 0x83332900 (constants `10512` with
+     base `-31949`) near call/bctrl sites.
+  3. Consider whether helper B's work item should have been queued by the
+     driver during device init (check the second device's init path, 0x8338
+     page, for writes to `0x83332900`).
+
 - **Session-6 — generic kernel-call tracer + MAJOR CORRECTION**:
   - Added a generic tracer to `REX_EXPORT` in `include/rex/hook.h`: every
     kernel export now logs its first 40 invocations ("[port-diag] CALL
