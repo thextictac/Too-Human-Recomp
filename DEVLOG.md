@@ -498,6 +498,70 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      likewise unregistered. Both are driver-internal late-init registrations
      whose code never executes in our run. Everything else (vblank ticking,
      submits, ring processing, kernel surface) is verified healthy.
+- **Session-14 — full dispatch-architecture decode; root cause stack refined
+  one level deeper; first downstream progress**:
+  1. **Event argument tracer** (`REX_EXPORT` wrapper, logs r3/r4 of first
+     20000 KeSetEvent/KeWait*/KeReset* calls): in 75 s there are 200+
+     `KeSetEvent(0x833328F0)` (main thread waking workers) and 200+
+     `KeSetEvent(0x833328CC)` (workers signaling "free") — and **ZERO
+     signals of the completion event 0x83332910**. Nobody ever signals it
+     naturally.
+  2. **Dispatcher fully decoded** (`sub_82A04330` init in recomp.121):
+     - semaphore `KeInitializeSemaphore(0x833328DC, 0)`
+     - work item at `0x83332900` = `{handler=0x82A051C0, ...}` (list node
+       self-linked at init)
+     - completion event at `0x83332910` (byte flag + refcount + list)
+     - 6 worker threads via `ExCreateThread` running loop `sub_82A041B8`
+       (and variant 0x82A04280): wait on 0x833328F0 → if `[ctx+300]!=0`
+       exit; else run DPC processor `sub_82A03800` + dispatcher
+       `sub_82A049F0(ctx,1)` (audio/voice work) → signal 0x833328CC → loop.
+     - Main thread's flusher `sub_82A04820` (via tail-call wrapper
+       `sub_82A0F4F0`, dispatched indirectly): sets `[ctx+300]=[r13+256]`,
+       `KeSetEvent(0x833328F0)`, then
+       `KeWaitForMultipleObjects(2, {0x833328CC, 0x83332910},
+       wait_type=1)` and **loops until the result is 1** (i.e. wait-any
+       picked the completion event).
+     - Helper B `sub_82A051C0(0x83332900)` = the title-terminate
+       notification registrar: calls `sub_82A05208` →
+       `ExRegisterTitleTerminateNotification(0x83332900, create=0)` →
+       zeroes `[0x83332900]` → `KeSetEvent(0x83332910)`.
+     - On HW the item is dispatched BY A WORKER during the flush, before
+       that worker signals 0x833328CC, so the flusher's blocking wait-any
+       wakes on the completion event first (index 1) and proceeds.
+  3. **Runtime wait semantics confirmed live** (`WAITM` logging in
+     KeWaitForMultipleObjects_entry): 200/200 waits return
+     `result=0` (index 0 = the always-signaled 0x833328CC) — the game
+     polls forever. 803 other wait calls returned
+     X_STATUS_INVALID_PARAMETER early (native-object lookup) — wait-any
+     with transient object availability.
+  4. **The completion event's KeSetEvent is a silent NO-OP**: the guest
+     header at 0x83332910 has a garbage type byte (0xC0, low byte of the
+     stored handler pointer), so `XObject::GetNativeObject` falls to
+     `default: assert_always; return NULL` and `xeKeSetEvent` returns 0
+     without signaling. **This is the direct reason the HLE injection
+     (calling 0x82A051C0 from the vsync watcher, 6×) did not unblock the
+     flusher.** Fix candidates: force-create the native object for
+     0x83332910 as an auto-reset event, or have
+     `KeSetEvent_entry` special-case it.
+  5. **Worker-side injection (experiment)**: patched the generated worker
+     loop (recomp.70.cpp, `sub_82A041B8`) to call
+     `sub_82A051C0(0x83332900)` once, right before its own
+     KeSetEvent(0x833328CC). Helper B executed (first time in any run),
+     `sub_82A05208` dispatched — and the run then entered **new
+     territory**: a tight `Unhandled guest access violation: read of
+     guest 0x00000001` loop on a worker thread (handle 0xF80000C4),
+     ~100 MB of log spam, title kept running. Next step: backtrace that
+     fault (gdb `break xmemory.cpp:547` + `bt` — pending-breakpoint
+     variant needed since the symbol lives in librexruntime.so), and
+     force-create the 0x83332910 native event so its KeSetEvent actually
+     lands. The flush protocol itself is now fully understood.
+  6. Misc corrections: earlier "0x83332930" readings were hex/decimal
+     conflations (10512 dec = 0x2910); the GPU-interrupt dispatch runs at
+     ~58 Hz (dispatch #4321 in 75 s — earlier "4 prints" was a marker
+     cap); the ISR doorbell MMIO write 0x7FC86110 is a display-flip
+     fallback register (AVIVO D1GRPH_PRIMARY_SURFACE_ADDRESS), ignored
+     by xenia too — not a blocker.
+
 - **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
