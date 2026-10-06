@@ -801,7 +801,17 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
   logged in this session (guest mappings include 0x100010000–0x170000000
   ≈1.75GB and 0x190000000–0x220000000); filter hits to the heap range,
   dev=hit−296, read [dev+0] → true vtable V, verify [V+1460] holds code,
-  then HLE-write V into [dev+0] post-creation and re-test.- **Next steps (final for this phase)**:
+  then HLE-write V into [dev+0] post-creation and re-test.- **Session-20 addendum 2 — first xenia find attempt negative**: the
+  gdb+SIGINT capture ran (xenia booted, SIGINT at t+75s stopped it, find
+  executed over all three mapping ranges) but reported "Pattern not
+  found" — either the device's method table is written later than t+75s
+  under xenia, or xenia's guest-heap mapping was outside the searched
+  ranges in that launch. Next attempt: SIGINT later (t+120s), and/or
+  first verify under xenia the title reaches the device-creation stage by
+  grepping xenia's log for the boot markers from
+  docs/reference/xenia-canary-boot-75s.log. Scripts remain at
+  /tmp/xenia_capture.sh + /tmp/xenia_capture.gdb (edit the sleep and
+  ranges there).- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
