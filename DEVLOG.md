@@ -555,6 +555,19 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      variant needed since the symbol lives in librexruntime.so), and
      force-create the 0x83332910 native event so its KeSetEvent actually
      lands. The flush protocol itself is now fully understood.
+  5b. **Force-created native event + boot advance**: patched
+     `KeSetEvent_entry` to force-create 0x83332910 as an auto-reset XEvent
+     (`GetNativeObject<XEvent>(state, ptr, as_type=1)` overrides the
+     garbage header type). With both injections active the boot now gets
+     FURTHER than ever: after helper B runs and the completion event
+     actually signals, the flusher's wait-any wakes with index 1 and the
+     boot advances into previously unreached code — which currently
+     faults in a tight loop (`Unhandled guest access violation: read of
+     guest 0x00000001`, ~27k violations, game keeps running). This is the
+     NEXT bug: backtrace the faulting guest PC (gdb breakpoint on
+     `xmemory.cpp:547` never resolved via pending breakpoint — try
+     breaking on the mangled `Memory::AccessViolationCallback` symbol
+     after libs load, or add the guest LR/PC to the violation log line).
   6. Misc corrections: earlier "0x83332930" readings were hex/decimal
      conflations (10512 dec = 0x2910); the GPU-interrupt dispatch runs at
      ~58 Hz (dispatch #4321 in 75 s — earlier "4 prints" was a marker
