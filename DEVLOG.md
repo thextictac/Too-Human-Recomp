@@ -606,7 +606,15 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      dump). Game side: worker-loop one-shot dispatch of helper B with
      register save/restore (recomp.70.cpp), vsync-thread HLE dispatch
      (6×, now redundant but harmless while [0x83332900]=0 after first run).
-- **Next steps (final for this phase)**:- **Next steps (final for this phase)**:
+- **Session-15 addendum — 3-minute soak**: with the fix, a 180 s run shows
+  the title's main loop alive (XNotifyGetNext polling, NtReadFile,
+  crypto/string conversions), zero access violations, and the flush
+  protocol completing every time it runs. The GPU driver stage is unchanged
+  (6 boot submits; [drv+16540] still 0; no per-frame ring activity yet) —
+  the title is past the dispatcher deadlock but the driver late-init (which
+  registers the per-vblank callback) still has not executed; that is the
+  next gate toward rendering.
+- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
