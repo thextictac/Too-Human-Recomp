@@ -731,6 +731,35 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      (not drv) into the callback — the switch stores [r3+10500]; if the
      stack-ctx form corrupts state, dispatch sub_826065E0 directly with
      r3=drv from the runtime instead of going through the guest thunk.
+- **Session-19 — payload injection implemented; event switch FIRES; the
+  real root cause surfaces: the heap device's constructor never ran**:
+  1. Implemented the payload injection (runtime allocates a 16-byte guest
+     event block via SystemHeapAlloc, writes its pointer to 0xFF6A2014
+     with the event id at +8, cycled/13 by default, every vblank before
+     the interrupt dispatch). Injection verified live (block=0x300A2000).
+  2. The ISR still couldn't dispatch (its own [drv+16540] callback slot is
+     empty), so the runtime now dispatches the event switch DIRECTLY after
+     each interrupt: `ExecuteInterrupt(0x826065E0, {dev, id})` with
+     dev read from the guest's own global `[[0x820008BC]]` (the
+     executable↔.so shared-global trick failed — drv=0 in the .so's view;
+     the guest global chain is authoritative). **The switch now fires with
+     the correct device (EVSWITCH r3=400f8980 r4=13).**
+  3. The id-13 case then faults reading guest 0x5B3 — and reading the case
+     body shows why: it dereferences `[[dev+0]+1460]` — a VTABLE. Our live
+     dump (session-13) showed `[dev+0..24] = 0xFFFFFFFF`: **the heap
+     device object's CONSTRUCTOR never ran**. Everything else (fields,
+     ISR registration, worker threads) was initialized field-by-field by
+     later code, but the ctor that stores the vtable at [dev+0] never
+     executed — which breaks every virtual-method path through the device
+     and is almost certainly the true root cause behind ALL the missing
+     late-init (per-vblank callback registration, queue arming).
+  4. Fix candidates (next session): (a) find [static_drv+0] (the
+     constructed static instance at 0x83380000) and HLE-copy its vtable
+     pointer into [heap_dev+0]; (b) find the device constructor in the
+     code (the function storing a data-section vtable into [r3+0] whose
+     callers include the device-creation path) and work out why it's
+     skipped — possibly the allocation path bypassed the ctor (malloc
+     without placement-new pattern in the analyzer's view).
 - **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
