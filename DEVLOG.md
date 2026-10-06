@@ -790,7 +790,18 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      after device creation in our runtime and re-test the event switch.
      Alternative: pair each ctor-scan hit with the allocator call site
      (sub_82A4C650 family, ~21 KB size immediate) to identify THE device
-     ctor directly.- **Next steps (final for this phase)**:
+     ctor directly.- **Session-20 addendum — xenia capture prepared (Yama workaround)**:
+  xenia launched fine (PID visible, storage root ~/.local/share/Xenia) but
+  /proc/PID/mem reads are blocked by ptrace_scope=4 for non-children.
+  Working approach prepared and scripted: launch xenia UNDER gdb
+  (`/tmp/xenia_capture.sh` → gdb batch runs the title, external SIGINT at
+  t+75s stops the inferior, then gdb `find /w` locates the device's
+  embedded method-table signature
+  {8274D6E8, 8274D720, 8274D078, 8274D098} across the large mappings
+  logged in this session (guest mappings include 0x100010000–0x170000000
+  ≈1.75GB and 0x190000000–0x220000000); filter hits to the heap range,
+  dev=hit−296, read [dev+0] → true vtable V, verify [V+1460] holds code,
+  then HLE-write V into [dev+0] post-creation and re-test.- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
