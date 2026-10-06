@@ -475,6 +475,47 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      `/tmp/xenia-extract/squashfs-root/usr/bin/xenia_canary` (stripped; guest
      memory on-demand-mapped — no flat base).
 
+- **Session-13 — live device struct dumps; submit path corrected; blocker
+  precisely scoped**:
+  1. **The device pointer MOVES between boots** (`0x400F8980` in some runs,
+     `0x400F8A80` in others — heap allocation order varies with thread
+     timing). All fixed-address state dumps before this were potentially
+     reading stale/other allocations. The submit-path marker now dumps the
+     live device struct (`/tmp/dev_struct.bin`, hit #3) and the ISR dumps
+     its own struct (`/tmp/isr_struct_live.bin`).
+  2. **Submit-path correction**: `[dev+21532]` (the "gate") only applies to
+     **path A** (`[dev+10941]` bit30 SET). Our device has bit30 CLEAR
+     (`[dev+10941]=0x00`), so submits take **path B** which bypasses the gate
+     and reaches the WP write via `sub_82745F28` + the ring-write loop. The
+     live dump confirms: cursor `[dev+10952]`=0x19, ring mask `[dev+14900]`=
+     0x1FFF, `[dev+300]`=0x8274D720 / `[dev+304]`=0x8274D078 (function
+     pointers). **Submits work.** (The earlier "gate cleared after init"
+     theory is dead; the gate=0 readings from the fixed-address dump were
+     artifacts.)
+  3. **Blocker, final form**: the per-vblank driver callback
+     **`[drv+16540]` = 0** after 35+ vblanks (ISR counter `[drv+16548]`=
+     0x23 and climbing), and the queue-processor handler **`[dev+2004]`** is
+     likewise unregistered. Both are driver-internal late-init registrations
+     whose code never executes in our run. Everything else (vblank ticking,
+     submits, ring processing, kernel surface) is verified healthy.
+- **Next steps (final for this phase)**:
+  1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
+     copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
+     destination is inside the device struct), or a never-reached init
+     branch. A gdb watchpoint on the LIVE host address (`base + dev`, dev
+     captured from the submit marker's stderr line) catches the writer if
+     one ever runs.
+  2. If no writer exists in our run: diff the same struct against xenia at
+     the equivalent point (xenia binary extracted at
+     `/tmp/xenia-extract/squashfs-root`; guest memory on-demand-mapped — use
+     gdb `find` over its writable mappings for the device struct pattern,
+     e.g. the `{0x8274D720, 0x8274D078}` function-pointer pair) to see the
+     registered values xenia's run achieves.
+  3. Consider HLE workaround: registering a minimal `[drv+16540]` handler
+     ourselves (via a runtime patch that populates it after
+     `VdSetGraphicsInterruptCallback`) to emulate the missing late-init —
+     riskier, but could unblock the pipeline for experimentation.
+
 - **Session-11 — E10 decoded and EXONERATED (red herring)**: instrumented
   `ExecuteIndirectBuffer` with a failure-region dump (in `patches/`). Result:
   - Failing indirect buffer: base `0x1F470000`, 64 words, read offset `0x50`
