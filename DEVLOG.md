@@ -984,3 +984,25 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
 2. Is the logo movie path ever reached? (grep logs for XMedia/XamMovie/XMV)
 3. Does the PM4 overflow (E10) eat the first frame's state? (packet trace)
 4. Are the over-merged 1MB+ functions (E4) on the boot/render path?
+
+- **Session-22 — VTABLE FOUND AND APPLIED: LOADER I/O RESUMED**:
+  1. Offline filter of the data-section dump (require code at V+0,
+     V+1456, V+1460, V+1464): 16,596 candidates in the post-text region
+     (dominated by the 0x831977AC jump table), ZERO with driver-region
+     code at +1460. Re-dumped the PRE-text region (0x82000000, 0x330000
+     bytes): **214 hits** — a `{handler, 0x4000xxxx tag}` pair-table at
+     ~0x822C3A98+ (driver methods interleaved with command-id tags).
+  2. HLE-tested candidate V=0x822C3AAC (its +1460 = 0x827577D0): wrote it
+     into [dev+0] at the watcher one-shot point. **Results: the 0x5B3
+     fault is ELIMINATED (zero violations), the event switch runs its
+     full id-13 case, and the loader's file I/O RESUMED (NtReadFile
+     active again — dead after t+0.5s in every prior run). Submits
+     continue (#50+).**
+  3. Remaining for the next session: cycle/verify the correct event id
+     (13 vs 14-17) and the real r5/r6 arguments for the switch (current
+     leftovers are ASCII garbage from the prior ISR frame - r5=35393200
+     r6=20202000 - the case bodies may read them); then check
+     [dev+10500] arming per id, and whether sustained loading reaches
+     the first XE_SWAP/VdSwap. Other vtable candidates (0x822C3AE4+,
+     stepping 8, methods 0x82757A18..0x82758D98) if id-13 semantics
+     prove wrong for V=...AAC.
