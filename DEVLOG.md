@@ -643,7 +643,23 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      begun. Next: watch whether sustained rendering eventually registers
      the driver callback, or trace what the first EndScene/Present path
      waits on.
-- **Next steps (final for this phase)**:
+- **Session-16 addendum — 4-minute run 092**: steady state stable — zero
+  violations, pump alive (submits ≥50, every-50th marker; same command
+  buffer resubmitted — a loading-style loop), CP advancing, no XE_SWAP
+  processed, VdSwap still boot-only, `[drv+16540]` still 0. The driver
+  worker threads (18/19) keep doing 30 s timed waits on 0x400FB67C /
+  0x400FB6CC (lr=0x82763F14). Conclusion of the gate analysis: nothing in
+  the emitted code stores to +16540 (verified statically earlier), no
+  write occurs at runtime in 5+ minutes (hardware watchpoint, session-13)
+  — the registration must be a COMPUTED/indirect store (register-held
+  offset, e.g. an init loop over callback slots) in code we have not
+  identified, or a stage the title still has not reached. Next options:
+  (a) find the init loop via stwx-pattern search in the driver init
+  region; (b) HLE-register a stub into [drv+16540] once its expected
+  behavior is inferred from the ISR call site (args: r3=&stack struct
+  {flags, [drv+16564], computed, r8, r7}); (c) check whether the game's
+  own Present path eventually runs once asset loading completes (pump
+  currently resubmits one buffer — possibly waiting on streaming).- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
