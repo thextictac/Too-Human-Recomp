@@ -575,7 +575,38 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      fallback register (AVIVO D1GRPH_PRIMARY_SURFACE_ADDRESS), ignored
      by xenia too — not a blocker.
 
-- **Next steps (final for this phase)**:
+- **Session-15 — THE BOOT DEADLOCK IS BROKEN**:
+  1. **Root cause of the guest-0x1 fault was my own injection bug**: the
+     worker-loop injection called `sub_82A051C0(0x83332900)` right before
+     the worker's `KeSetEvent(0x833328CC)` — but helper B clobbers r3/r4/r5
+     (caller-saved in the PPC ABI), so every subsequent KeSetEvent received
+     garbage r3 (=0x1) → `GetNativeObject` dereferenced guest 0x1 → the
+     100 MB violation-spam loop. Fix: save/restore r3/r4/r5 around the
+     injected call in recomp.70.cpp.
+  2. **Diagnostics that got there**: unconditional `FAULT-MARK15` logging
+     (guest lr + sp) adjacent to the "Unhandled" log line in
+     `Memory::AccessViolationCallback` — `guest_lr=0x82A0426C` identified
+     the worker-loop KeSetEvent call site immediately. (Earlier attempts
+     failed: the conditional gdb breakpoint never fired under gdb due to
+     timing differences, and an intermediate stack-walk diagnostic crashed
+     the process by doing raw loads inside the signal handler. The
+     FAULT-MARK15 lines only appeared in a rotated log file — grep the
+     WHOLE logs dir, not just the latest file.)
+  3. **Result — the flusher completed for the first time ever**: with the
+     register fix + the force-created auto-reset event at 0x83332910, the
+     flusher's wait-any returned **index 1** (8×, vs only index-0 spins in
+     every previous run), the boot advanced past the flush, and new kernel
+     activity appeared (XNotifyGetNext, NtReadFile, RtlUnicode/MultiByte
+     conversions, XeCryptShaUpdate). Violation count dropped from ~100k to
+     **zero**. GPU driver chain unchanged so far (6 boot submits, ISR cb
+     slot still 0) — that stage comes next.
+  4. Runtime side-fixes kept in the SDK: `KeSetEvent_entry` force-creates
+     auto-reset natives for 0x833328CC and 0x83332910; FAULT-MARK15 diag;
+     WAITM result logging; ARG tracer (Ke*Set/Wait/Reset, r3/r4, wait-list
+     dump). Game side: worker-loop one-shot dispatch of helper B with
+     register save/restore (recomp.70.cpp), vsync-thread HLE dispatch
+     (6×, now redundant but harmless while [0x83332900]=0 after first run).
+- **Next steps (final for this phase)**:- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
