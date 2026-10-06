@@ -760,7 +760,17 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      callers include the device-creation path) and work out why it's
      skipped — possibly the allocation path bypassed the ctor (malloc
      without placement-new pattern in the analyzer's view).
-- **Next steps (final for this phase)**:
+- **Session-19 addendum — vtable HLE experiment (run 102)**: copying
+  [0x83380000] (static instance [+0]) into [heap_dev+0] did NOT trigger —
+  the static instance's first word is NOT a code-range vtable (the static
+  instance is also uninitialized, or its layout differs). Violations
+  dropped 30k → 451 with the injection + direct dispatch active. The
+  correct vtable must come from the device constructor path: next session
+  should find the ctor (search for stores of a data-section constant into
+  [r3+0] early in a function whose callers allocate the ~21KB device, or
+  capture the true vtable via a guest-side dump from xenia) and either
+  HLE-write it at the right moment or un-block the constructor's call
+  path.- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
