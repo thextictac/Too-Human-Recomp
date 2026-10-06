@@ -811,7 +811,23 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
   grepping xenia's log for the boot markers from
   docs/reference/xenia-canary-boot-75s.log. Scripts remain at
   /tmp/xenia_capture.sh + /tmp/xenia_capture.gdb (edit the sleep and
-  ranges there).- **Next steps (final for this phase)**:
+  ranges there).- **Session-20 addendum 3 — capture pipeline fixed; definitive negative:
+  xenia's title also lacks the device at t+120s**: the earlier "Pattern
+  not found" runs were invalid — gdb was stopping the inferior at the
+  FIRST SIG35 real-time event (xenia thread signaling), seconds into
+  boot. With SIG33–SIG38 handled (nostop/noprint/pass), the inferior now
+  runs the full 120 s before the stop, and the mapping-aware find sweeps
+  every large region cleanly (no exceptions, all ranges searched). The
+  signature is still absent in xenia's memory. Interpretation: under
+  xenia the title has not created the D3D device by t+120 s — device
+  creation happens later there (menus/profile gating), while in our port
+  the flush-injection path drove early creation through partially-
+  initialized code paths. This reframes the whole late-init mystery: the
+  device object we are patching may be a PRE-CONSTRUCTION allocation in a
+  healthy environment, and our injected dispatch may be racing the title's
+  own init order. Next session should verify WHERE xenia's boot stalls
+  (log comparison, guest call tracing via xenia's own logging) before any
+  further HLE writes.- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
