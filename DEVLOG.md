@@ -697,7 +697,41 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
   141:30569, 175:7589, 61:35780 store it; sub_82606DA0's reset path clears
   it) — determine which writer targets the heap device (0x400F8980), why
   it never runs, and what gates it. This is more tractable than the
-  +16540 hunt because the writers exist as analyzable code.- **Next steps (final for this phase)**:
+  +16540 hunt because the writers exist as analyzable code.- **Session-18 — the [dev+10500] gate decoded end-to-end; the missing
+  stimulus is a HARDWARE payload injection**:
+  1. **Writer identification**: of the four [dev+10500] writers,
+     `sub_826065E0` (175.cpp:7589) is the arming path — it is the DRIVER
+     EVENT SWITCH: on event ids 13–17 it stores r28 into [dev+10500], sets
+     [dev+10496], and calls the queue processor (sub_82606DA0).
+     sub_83122F68 only arms the STATIC instance (0x8338 base) with a
+     data-section descriptor; sub_825D6F08 is a struct copy.
+  2. **Dispatch chain**: the switch is called by `sub_82606D90` — a pure
+     THUNK: `r4 = event block; event_id = [r4+8]; tail-call switch(r3, id)`
+     — and by `sub_8263B260`. Both are indirect-dispatch handlers
+     registered in a heap table (runtime scan found ptr->82606D90 at
+     0x401BFD00). Marker-verified: the switch NEVER fires.
+  3. **The interrupt payload block is hardware-filled**:
+     [drv+10900] = **0xFF6A2000** — a hardware block (the ISR vector is
+     programmed there by the guest: [sec+16]=0x8274F628). On HW the
+     interrupt controller writes the EVENT BLOCK pointer into [sec+20]
+     when raising the interrupt; the ISR reads it as r3 and dispatches
+     via the callback with r4=payload. In our runtime [sec+20] is always
+     0 → payload=0 → the ISR runs with a null payload and nothing ever
+     dispatches driver events. (Also fixed two diagnostic crashes I
+     introduced: unguarded TranslateVirtual reads of [sec+20]/
+     payload with 0 bases wedged the vsync thread in a fault loop —
+     run 095; guards + retry-until-nonzero added.)
+  4. **Next concrete step**: emulate the payload injection — on each
+     graphics interrupt dispatch (DispatchInterruptCallback), write a
+     small event block (guest-allocated by the runtime) containing the
+     appropriate event id at +8 into [sec+20] (guest 0xFF6A2014) BEFORE
+     invoking the callback chain, with ids from the 13–17 range the
+     switch handles; then verify sub_82606D90/826065E0 fire, [dev+10500]
+     arms, and the loader unblocks. NOTE: the ISR passes r3=&stack-ctx
+     (not drv) into the callback — the switch stores [r3+10500]; if the
+     stack-ctx form corrupts state, dispatch sub_826065E0 directly with
+     r3=drv from the runtime instead of going through the guest thunk.
+- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
