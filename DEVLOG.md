@@ -770,7 +770,27 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
   [r3+0] early in a function whose callers allocate the ~21KB device, or
   capture the true vtable via a guest-side dump from xenia) and either
   HLE-write it at the right moment or un-block the constructor's call
-  path.- **Next steps (final for this phase)**:
+  path.- **Session-20 — vtable hunt progress**:
+  1. Driver-region ctor scan (lis-built data constant → [reg+0] stores):
+     123 KB of hits saved to
+     `~/.zcode/cli/exec/sess_997d39e6-2f55-4996-95aa-a0d4b05e160e/call_c921abe210a34d73ac48ab2f-stdout.log`
+     (e.g. sub_827613B0/sub_8276EB48/sub_82768098 — large factory/init
+     functions with many object constructions). Too generic to eyeball;
+     needs pairing with the ~21 KB allocation site.
+  2. Embedded-table hypothesis TESTED AND REFUTED: the device object DOES
+     embed 184 code-range method pointers at [dev+296..+2100]
+     ([dev+296]=0x8274D6E8, +300=0x8274D720, ...), but the entry the
+     switch needs ([table+1460] with table=dev+296 → [dev+1756]) is 0 —
+     so [dev+0] must point at a STATIC data-section vtable, written by
+     the ctor that never ran.
+  3. Fastest remaining path: boot the title under xenia (binary at
+     /tmp/xenia-extract/squashfs-root/usr/bin/xenia_canary), dump guest
+     memory at the heap device ([dev+0..8]) to capture the true vtable
+     value V, verify [V+1460] is code, then HLE-write V into [dev+0]
+     after device creation in our runtime and re-test the event switch.
+     Alternative: pair each ctor-scan hit with the allocator call site
+     (sub_82A4C650 family, ~21 KB size immediate) to identify THE device
+     ctor directly.- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
