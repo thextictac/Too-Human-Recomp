@@ -687,7 +687,17 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      (registered by code that does not exist as an analyzable store — its
      value/behavior still unknown) or on unarmed driver queues
      ([dev+10500]=0) is the open question for the next session.
-- **Next steps (final for this phase)**:
+- **Session-17 addendum — loader is gated, not slow**: in run 092 all file
+  I/O (46 opens, 40 reads, 23 writes) completes within the FIRST 0.5 s and
+  then stops for the rest of the run; the title renders its loading loop
+  for minutes with no further I/O. The loading pipeline is blocked, most
+  plausibly circularly: loader → driver queues → queue arming
+  (`[dev+10500]`, still 0) → driver late-init. **Best next lead**: the
+  `[dev+10500]` writers ARE identifiable statically (recomp.52:7921,
+  141:30569, 175:7589, 61:35780 store it; sub_82606DA0's reset path clears
+  it) — determine which writer targets the heap device (0x400F8980), why
+  it never runs, and what gates it. This is more tractable than the
+  +16540 hunt because the writers exist as analyzable code.- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
