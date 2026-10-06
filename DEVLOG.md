@@ -827,7 +827,28 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
   healthy environment, and our injected dispatch may be racing the title's
   own init order. Next session should verify WHERE xenia's boot stalls
   (log comparison, guest call tracing via xenia's own logging) before any
-  further HLE writes.- **Next steps (final for this phase)**:
+  further HLE writes.- **Session-21 — complete data-section scan: the missing vtable is from
+  an UNKNOWN interface**:
+  1. Dumped the guest data sections from the live runtime
+     (/tmp/guest_data.bin, first 0x82000000+4MB then 0x83000000+8MB — the
+     full data coverage) and scanned offline for static tables containing
+     the device's method pointers. Result: **no static table anywhere
+     contains 0x8274D720** (or any long code-pointer run matching the
+     embedded table). Only two long code-word runs exist in the post-text
+     region (0x831977AC, 16962 words — a jump/dispatch table; and an
+     88-word run) — neither related.
+  2. Conclusion: the vtable the event switch needs ([[dev+0]+1460])
+     belongs to a DIFFERENT interface than the embedded method table —
+     its entries are methods we have not identified, written by the
+     never-run constructor. Empirical candidates: the ctor-scan hits
+     (persisted 123 KB log, lis bases 0x820C/0x8215/0x821E/0x8222/0x8225–
+     0x8228) — filterable offline by requiring [V+1460] to be code
+     (computable from /tmp/guest_data.bin for bases in the first dump).
+  3. Boot-order verification under xenia (capture retries) established
+     that xenia's title also lacks the device at t+120 s — so no vtable
+     capture is possible there without progressing xenia's own boot
+     further (profile/menu gating).
+- **Next steps (final for this phase)**:- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
