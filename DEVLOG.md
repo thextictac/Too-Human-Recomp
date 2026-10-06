@@ -659,7 +659,35 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
   behavior is inferred from the ISR call site (args: r3=&stack struct
   {flags, [drv+16564], computed, r8, r7}); (c) check whether the game's
   own Present path eventually runs once asset loading completes (pump
-  currently resubmits one buffer — possibly waiting on streaming).- **Next steps (final for this phase)**:
+  currently resubmits one buffer — possibly waiting on streaming).- **Session-17 — [drv+16540] gate investigation; pipeline NOT wedged on
+  coherence; drain path verified live**:
+  1. **Static hunt for the +16540 writer exhausted**: enumerated all 699
+     functions in the driver region (0x82740000–0x82770000) — 363 indexed
+     (stwx) stores, none matching a small-data-fed callback-slot write;
+     the only +16536/+16540 offset-family sites are the STATIC-instance
+     creator (sub_828718E0, stores a data-section descriptor — not code),
+     the ISR/counter accesses, and float (`lfs`) readers of a DIFFERENT
+     struct view. No registration store exists in reachable code.
+  2. **WAIT_REG_MEM instrumented** (`WRM` log): every wait in the submitted
+     buffers polls `XE_GPU_REG_COHER_STATUS_HOST (0xA31)` for bit31 clear
+     — and packets COMPLETE (24+ separate WRM packets processed, same
+     buffer resubmitted by the game's loop). **The CP is not wedged**;
+     MakeCoherent works. (A first fix attempt conflated 0xA31 with
+     VGT_EVENT_INITIATOR — reverted, duplicate-case compile error exposed
+     the identity.)
+  3. **Queue-drain path verified live**: sub_8274F528 (the ISR's sibling,
+     called from int-cb source==0 when MMIO 0x7FC86544 bit0 is set — our
+     ReadRegister 0x1951 returns 1) runs at 60 Hz: increments the vblank
+     counter [drv+16548], stamps [drv+16552], and DRAINS the ISR ring
+     ([drv+16700] read idx → [drv+16704] write idx), dispatching CPU
+     doorbells. The ISR→ring→drain chain works.
+  4. **Remaining gate refined**: the app-side Present path never runs (no
+     XE_SWAP, VdSwap boot-only, one buffer resubmitted — a loading loop).
+     Whether that is gated on the never-registered [drv+16540] callback
+     (registered by code that does not exist as an analyzable store — its
+     value/behavior still unknown) or on unarmed driver queues
+     ([dev+10500]=0) is the open question for the next session.
+- **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
      destination is inside the device struct), or a never-reached init
