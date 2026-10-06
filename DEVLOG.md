@@ -614,6 +614,35 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
   the title is past the dispatcher deadlock but the driver late-init (which
   registers the per-vblank callback) still has not executed; that is the
   next gate toward rendering.
+- **Session-16 — RENDER PUMP UNLOCKED**:
+  1. **vsync-thread HLE injection removed** (graphics_system.cpp) — the
+     worker-side dispatch is now the only path, per plan.
+  2. **5-minute soak (run 090, worker-only, one-shot dispatch)**: zero
+     violations, GPU interrupts at 60 Hz (#17881), ISR running every
+     vblank, flush protocol completes (8×) — but `[drv+16540]` still never
+     registers and ring submissions stayed at 6. Steady state identified:
+     driver worker threads 18/19 do timed waits (30 s) on 0x400FB67C /
+     0x400FB6CC from lr=0x82763F14 (driver queue workers waiting for work
+     that never arrives); main thread runs the flusher only occasionally
+     (18 wake signals in 300 s).
+  3. **Root cause of the stall found**: the flush protocol pumps ONE work
+     item per cycle; the one-shot worker injection fed only the FIRST
+     cycle — later cycles completed vacuously against the pre-signaled
+     completion event (auto-reset event created with initial_state from
+     the garbage header — nonzero), so all subsequent init work items were
+     starved. **Fix: dispatch the work item on EVERY flush cycle**
+     (recomp.70.cpp worker loop, register save/restore kept).
+  4. **Result (run 091, 150 s)**: ring submissions went from 6 (all boot)
+     to **50+ and counting** — the game's render pump is alive for the
+     first time; the CP advances the write pointer (updates #1→22, #2→25)
+     and processes the buffers. Zero violations. The known-benign E10
+     indirect-buffer overflow appeared once at t+1s as before.
+  5. **Still missing for a visible frame**: `[drv+16540]` per-vblank
+     callback still unregistered (ISR slot-check cb=0), no XE_SWAP packet
+     processed yet, VdSwap still only the boot one — presentation has not
+     begun. Next: watch whether sustained rendering eventually registers
+     the driver callback, or trace what the first EndScene/Present path
+     waits on.
 - **Next steps (final for this phase)**:
   1. Identify the registration writer for `[drv+16540]`/`[dev+2004]`: bulk
      copy (SIMD memcpy from a template — instrument `sub_82A45878` when its
