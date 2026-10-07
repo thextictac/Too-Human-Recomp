@@ -1006,3 +1006,31 @@ Format per entry: **SYMPTOM → ROOT CAUSE → FIX → EVIDENCE/PREVENTION**
      the first XE_SWAP/VdSwap. Other vtable candidates (0x822C3AE4+,
      stepping 8, methods 0x82757A18..0x82758D98) if id-13 semantics
      prove wrong for V=...AAC.
+
+- **Session-23 — id cycling, windowed runner, regression fixes, and an
+  open mystery**:
+  1. **Event-id cycling tested**: ids 14–17 fault immediately (12k
+     violations, loader stalls — their cases expect un-emulated state);
+     id 13 is the only clean case. Event-id cycling REVERTED to fixed 13.
+  2. **r5/r6 lesson**: passing synthetic r6=0 to the switch faults (the
+     case body reads r6 as a pointer); session-22's 2-arg form (r5/r6 =
+     register leftovers) is clean. Reverted to 2 args.
+  3. **Windowed runner (user request)**: `run_game.sh` — kills stale
+     instances, launches the game windowed, watchdog kills on 60s log
+     freeze / violation-spam crash loop / timeout. Working.
+  4. **Two run-to-run regressions fixed**: (a) the vtable HLE was gated
+     behind sec!=0 (never true in some runs) — decoupled to a drv!=0
+     one-shot reading [[0x820008BC]]; (b) the dispatch chain now gates on
+     the driver's HW block registration ([drv+10900]!=0) — before that,
+     the guest ISR faulted reading [0+16] and wedged the dispatching
+     thread.
+  5. **OPEN MYSTERY**: since the session-22 run (106), the driver HW
+     block registration ([drv+10900]) has not been observed again, and
+     today's runs show a single repeating fault (read of guest 0x5,
+     ~24k/run) with NO FAULT-MARK15 lines even though the MARK15 code is
+     verified present in the installed librexruntime.so (string check +
+     mtime) — today's runs appear to execute different runtime behavior
+     than yesterday's identical-source build. First action next session:
+     resolve this (verify the actually-loaded .so path via /proc/PID/maps
+     during a live run, or add a unique build-ID log line at startup)
+     before chasing guest-side logic further.
